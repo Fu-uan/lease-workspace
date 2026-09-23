@@ -182,6 +182,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 /* ===== 缓存策略：按资源分级 TTL（毫秒） ===== */
 var CACHE_RULES = [
   [/^\/api\/todo/, 10000],
+  [/^\/api\/workbench\//, 10000],
   [/^\/api\/cards/, 15000],
   [/^\/api\/payments/, 15000],
   [/^\/api\/vouchers/, 30000],
@@ -233,6 +234,8 @@ var API = {
     }
     if(list){ for(var j=0;j<list.length;j++) this.invalidate(list[j]); }
     else { this.clear(); }
+    // 任何写操作都可能改变任务计数，工作台汇总一律作废（避免首页数字不刷新）
+    this.invalidate('/api/workbench/summary');
   },
   /* 预加载：只填充缓存，不改变当前视图；已缓存或已在途则跳过 */
   prefetch(paths, quiet){
