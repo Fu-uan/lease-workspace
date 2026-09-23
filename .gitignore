@@ -1,0 +1,10 @@
+.venv_img/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+.env.*
+*.key
+*.pem
+*_token*
+backups/

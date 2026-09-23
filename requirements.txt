@@ -1,0 +1,4 @@
+# Optional local document extraction. Core app starts without these packages.
+PyMuPDF>=1.24,<2
+rapidocr_onnxruntime==1.4.4
+Pillow>=10,<13
