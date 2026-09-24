@@ -2459,8 +2459,8 @@ def card_context(card_id):
         "payments": payments,
         "vouchers": voucher_rows,
         "versions": versions,
-        "intake": W.latest_intake(sys.modules[__name__], card_id),
-        "approval_events": W.events(sys.modules[__name__], card_id, "approval-v2"),
+        "intake": next(iter(reversed(W.events(sys.modules[__name__], card_id, "intake-v2", records=versions))), None),
+        "approval_events": W.events(sys.modules[__name__], card_id, "approval-v2", records=versions),
     }
 
 

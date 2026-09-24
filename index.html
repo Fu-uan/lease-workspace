@@ -62,6 +62,8 @@ button{font-family:inherit}
 .input,.select,.textarea{width:100%;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:14px;color:var(--card-fg)}
 .input:focus,.select:focus,.textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
 .textarea{height:auto;padding:8px 12px;resize:vertical}
+.contract-file-bar{display:flex;align-items:center;gap:16px;padding:12px 0;flex-wrap:wrap}.contract-file-bar label{font-weight:600}.contract-file-bar input{max-width:100%}.intake-source-grid{align-items:stretch}.intake-source-grid>#ocrStatus{grid-column:1/-1;white-space:normal}.intake-source-card .btn{height:auto;min-height:34px;white-space:normal;padding:7px 12px}[data-workflow-summary] h3{margin:0 0 8px;font-size:17px}[data-workflow-summary] p{margin:8px 0;line-height:1.65}[data-workflow-summary] details{margin-top:14px;padding-top:12px;border-top:1px solid var(--hairline)}[data-workflow-summary] summary{cursor:pointer;color:var(--muted-fg);font-size:13px}.review-history p{font-size:13px}
+.intake-source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:10px 0 18px}.intake-source-card{border:1px solid var(--hairline);border-radius:10px;background:#fff;padding:14px 16px}.intake-source-card h4{margin:0 0 6px;font-size:15px}.intake-source-card p{margin:0 0 10px;color:var(--muted-fg);font-size:12.5px;line-height:1.55}.intake-source-card .source-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.intake-source-card.ai{background:#f8faff;border-color:#cbdafa}.intake-source-card.ocr{background:#fbfcfd}@media(max-width:800px){.intake-source-grid{grid-template-columns:1fr}}
 .grid{display:grid;gap:14px}
 .grid-2{grid-template-columns:1fr 1fr}
 .grid-3{grid-template-columns:1fr 1fr 1fr}
@@ -863,6 +865,7 @@ async function renderDetail(passedId){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active',t.dataset.tab==='info');});
   // 缓存台账数据供 tab 切换用，避免重复请求
   window._detailCache={overview:overview, ledger:ledger, ifrs:ifrs};
+  return ctx;
 }
 
 function tabOverview(ov){

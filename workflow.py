@@ -9,10 +9,10 @@ import json
 import uuid
 
 
-def events(B, card_id=None, kind=None):
+def events(B, card_id=None, kind=None, records=None):
     filt = {'property': {'property': '关联卡片ID', 'text': {'equals': card_id}}} if card_id else None
     out = []
-    for r in B.lc.query(B.TBL['version_snapshots'], filt=filt):
+    for r in (records if records is not None else B.lc.query(B.TBL['version_snapshots'], filt=filt)):
         try:
             d = json.loads(B.val(r, '快照JSON', '{}'))
         except (ValueError, TypeError):

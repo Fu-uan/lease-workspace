@@ -49,9 +49,14 @@
     document.getElementById('ocrDetail').before(document.getElementById('ocrSegHint'));
     const help=document.getElementById('ocrFile').closest('div').parentElement.querySelector('.hint');
     if(help)help.textContent='上传完整合同即可。当前 Demo 支持单文件不超过50MB、PDF最多50页；识别后仍需人工核对。正式版边界由服务器配置。';
-    document.querySelector('[data-action="ocr-ai"]').style.display='none';
-    document.querySelector('[data-action="ocr-run"]').insertAdjacentHTML('afterend',
-      '<button class="btn btn-secondary btn-sm" data-action="ai-config">配置 AI 扫描</button><button class="btn btn-primary btn-sm" data-action="ai-scan">AI 扫描合同</button>');
+    const sourceRow=document.getElementById('ocrFile').parentElement;
+    sourceRow.className='intake-source-grid';
+    sourceRow.innerHTML='<div class="intake-source-card ocr"><h4>方案一：本地 OCR 识别</h4><p>上传完整合同后，由系统 OCR 提取文字和候选字段。识别结果需要人工核对。</p><div class="source-actions"><input type="file" id="ocrFile" accept=".png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt" style="font-size:13px"><button class="btn btn-primary btn-sm" data-action="ocr-run">上传并进行 OCR 识别</button><button class="btn btn-ghost btn-sm" data-action="ocr-text">查看 OCR 原文</button></div></div>'+
+      '<div class="intake-source-card ai"><h4>方案二：AI 辅助识别</h4><p>调用公司内网多模态模型识别合同。首次使用先配置接口和 API Key，结果仍需人工核对。</p><div class="source-actions"><button class="btn btn-secondary btn-sm" data-action="ai-config">配置 AI 接口</button><button class="btn btn-primary btn-sm" data-action="ai-scan">AI 识别合同</button></div></div><span id="ocrStatus" class="hint"></span>';
+    const oldAiBox=document.getElementById('ocrAiBox');if(oldAiBox)oldAiBox.style.display='none';
+    const fileBar=document.createElement('div');fileBar.className='contract-file-bar';
+    const fileLabel=document.createElement('label');fileLabel.htmlFor='ocrFile';fileLabel.textContent='合同文件';
+    fileBar.append(fileLabel,document.getElementById('ocrFile'));sourceRow.before(fileBar);
     document.getElementById('ocrDetail').insertAdjacentHTML('beforebegin',
       '<div class="hint">计费分段表示每月费用；付款计划表示约定支付，二者不能直接等同。推算值需人工核对。</div>'+
       '<div id="reviewSegments"></div><button type="button" class="btn btn-secondary btn-sm" id="newReviewSegment">添加计费分段</button>'+
@@ -191,13 +196,14 @@
     finally{busy=false;document.getElementById('dlgCardOk').disabled=false;}
   };
   renderDetail=async function(id){
-    await baseDetail(id);
+    const loaded=await baseDetail(id);
+    if(!loaded)return;
     id=id||(curCard&&curCard.record_id);if(!id)return;
-    const r=await API.req('GET','/api/cards/'+id+'/context');if(!r.data.ok)return;
-    context=r.data;const d=context.intake;
-    const box=document.createElement('section');box.className='card';box.style.marginBottom='16px';
+    document.querySelectorAll('[data-workflow-summary]').forEach(x=>x.remove());
+    context=loaded;const d=context.intake;
+    const box=document.createElement('section');box.className='card';box.dataset.workflowSummary='1';box.style.marginBottom='16px';
     const history=context.approval_events||[];
-    box.innerHTML='<div class="card-b"><h3>复核与审批摘要</h3><p>'+
+    box.innerHTML='<div class="card-b"><h3>合同复核</h3><p class="hint">'+
       esc(fv(curCard['合同编码'])+'｜'+fv(curCard['卡片名称'])+'｜'+fv(curCard['费用类型']))+
       '</p><p>计费段 '+context.overview.length+' 条；合同法台账 '+context.ledger.length+' 行；'+
       '校验问题 '+context.validation.errors.length+' 项。</p>'+
@@ -208,7 +214,7 @@
       ' <button class="btn btn-primary" data-action="card-submit" data-id="'+esc(id)+'">核对完成，提交审批</button>':'')+
       (fv(curCard['审批状态'])==='待审'&&history.length&&history[history.length-1].actor===(ME&&ME.account)?
         '<button class="btn btn-secondary" data-action="withdraw" data-id="'+esc(id)+'">撤回本次提交</button>':'')+
-      '<h4>审批时间线</h4>'+history.map(e=>'<p>'+esc((e.time||'').replace('T',' ').slice(0,19)+' · '+(e.name||e.actor||'系统')+' · '+e.action+(e.opinion?'：'+e.opinion:''))+'</p>').join('')+
+      '<details class="review-history"><summary>审批记录（'+history.length+'）</summary>'+(history.length?history.map(e=>'<p>'+esc((e.time||'').replace('T',' ').slice(0,19)+' · '+(e.name||e.actor||'系统')+' · '+e.action+(e.opinion?'：'+e.opinion:''))+'</p>').join(''):'<p class="hint">尚未提交审批</p>')+'</details>'+
       '<details><summary>识别与人工修改依据</summary><div class="source-review">'+
       (d?sourceReadable(d.payload):'<p class="hint">旧卡片尚无来源快照</p>')+'</div></details></div>';
     document.getElementById('content').insertBefore(box,document.querySelector('#content .tabs'));
