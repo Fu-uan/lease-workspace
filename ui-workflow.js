@@ -50,6 +50,8 @@
     const help=document.getElementById('ocrFile').closest('div').parentElement.querySelector('.hint');
     if(help)help.textContent='上传完整合同即可。当前 Demo 支持单文件不超过50MB、PDF最多50页；识别后仍需人工核对。正式版边界由服务器配置。';
     document.querySelector('[data-action="ocr-ai"]').style.display='none';
+    document.querySelector('[data-action="ocr-run"]').insertAdjacentHTML('afterend',
+      '<button class="btn btn-secondary btn-sm" data-action="ai-config">配置 AI 扫描</button><button class="btn btn-primary btn-sm" data-action="ai-scan">AI 扫描合同</button>');
     document.getElementById('ocrDetail').insertAdjacentHTML('beforebegin',
       '<div class="hint">计费分段表示每月费用；付款计划表示约定支付，二者不能直接等同。推算值需人工核对。</div>'+
       '<div id="reviewSegments"></div><button type="button" class="btn btn-secondary btn-sm" id="newReviewSegment">添加计费分段</button>'+
@@ -66,6 +68,34 @@
     }catch(e){}}
     paintSegments();
   };
+  function aiCfg(){try{return JSON.parse(sessionStorage.getItem('lease-ai-config')||'{}')}catch(e){return {}}}
+  function aiConfig(){
+    const c=aiCfg(), box=document.getElementById('ocrStatus');
+    const endpoint=prompt('OpenAI 兼容接口地址',c.endpoint||'https://zy-new-api.zy.com/v1/chat/completions'); if(endpoint===null)return;
+    const model=prompt('模型名称',c.model||'deepseek-v4-flash-ga-260731'); if(model===null)return;
+    const key=prompt('API Key（仅保存在当前浏览器会话，不写入业务数据）',c.api_key||''); if(key===null)return;
+    sessionStorage.setItem('lease-ai-config',JSON.stringify({endpoint:endpoint.trim(),model:model.trim(),api_key:key.trim()}));
+    if(box)box.textContent='AI 扫描配置已保存到当前会话。';
+  }
+  async function aiScan(){
+    const f=document.getElementById('ocrFile'), c=aiCfg();
+    if(!c.endpoint||!c.model||!c.api_key){aiConfig();return;}
+    if(!c.api_key)return;
+    let image_data='';
+    if(f&&f.files&&f.files[0]&&/^image\//.test(f.files[0].type)){
+      const raw=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(f.files[0]);}); image_data=raw;
+    }
+    msg('正在调用内网 AI，结果仍需人工核对…');
+    const r=await API.req('POST','/api/ai-scan',{endpoint:c.endpoint,model:c.model,api_key:c.api_key,text:window._ocrText||'',image_data},180000);
+    if(!r.data.ok){msg(r.data.error||'AI 扫描失败');return;}
+    if(!r.data.result||typeof r.data.result!=='object'){msg('AI 已返回，但不是合法 JSON；请改用“其他导入方式”粘贴并核对。');return;}
+    applyOcrResult(r.data.result); msg('AI 扫描完成，识别内容已填入草稿，请逐项核对。');
+  }
+  document.addEventListener('click',e=>{
+    const a=e.target.closest('[data-action]')?.dataset.action;
+    if(a==='ai-config'){e.preventDefault();aiConfig();}
+    if(a==='ai-scan'){e.preventDefault();aiScan().catch(err=>msg('AI 扫描失败：'+err.message));}
+  });
   function paintSegments(){
     const el=document.getElementById('reviewSegments');if(!el)return;
     el.innerHTML='<h4>计费分段</h4>'+table(['起始日','终止日','月数','月金额','小计','来源'],segs.map((s,i)=>

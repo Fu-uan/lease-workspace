@@ -31,6 +31,8 @@ import hmac as _hmac
 import re
 import subprocess
 import tempfile
+import urllib.request
+import urllib.error
 
 import library_client as lc
 import workflow as W
@@ -2855,6 +2857,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._upload(k, body)
                 return
+            if p == "/api/ai-scan":
+                k = self._require(roles=[ROLE_ADMIN, ROLE_KEEPER])
+                if not k:
+                    return
+                self._ai_scan(k, body)
+                return
 
             if p == "/api/cards":
                 k = self._require(roles=[ROLE_ADMIN, ROLE_KEEPER])
@@ -3024,6 +3032,45 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, save_ledger_adjust(k, card_id, body.get("rows") or []))
             return
         self._json(404, {"ok": False, "error": "not found"})
+
+    def _ai_scan(self, cur, body):
+        """OpenAI-compatible multimodal relay proxy; the key is never persisted or logged."""
+        endpoint = str(body.get('endpoint') or '').strip()
+        model = str(body.get('model') or '').strip()
+        api_key = str(body.get('api_key') or '').strip()
+        if not endpoint.startswith(('https://', 'http://')):
+            return self._json(400, {'ok': False, 'error': '模型接口地址无效'})
+        if not model or not api_key:
+            return self._json(400, {'ok': False, 'error': '请先填写模型名称和 API Key'})
+        if len(api_key) > 300 or len(model) > 120:
+            return self._json(400, {'ok': False, 'error': '模型配置长度无效'})
+        source_text = str(body.get('text') or '')[:120000]
+        image_data = str(body.get('image_data') or '')
+        if len(image_data) > 18 * 1024 * 1024:
+            return self._json(400, {'ok': False, 'error': '图片内容过大，请使用本地 OCR 或压缩图片'})
+        instruction = ('你是财务租赁合同录入助手。只返回一个合法 JSON 对象，不要 Markdown，不要解释。'
+                       '字段可包含：合同编码、卡片名称、费用类型、承租方、出租方、实际付款方、实际收款方、'
+                       '租赁地址、租赁起始日、租赁终止日、建筑面积、实用面积、payment_table、segments、oneoff。'
+                       '无法确认的字段返回空字符串；金额必须是数字；不要猜测。')
+        content = [{'type': 'text', 'text': instruction + ('\n合同 OCR 原文：\n' + source_text if source_text else '')}]
+        if image_data.startswith('data:image/'):
+            content.append({'type': 'image_url', 'image_url': {'url': image_data}})
+        payload = json.dumps({'model': model, 'temperature': 0, 'messages': [{'role': 'user', 'content': content}]}, ensure_ascii=False).encode('utf-8')
+        req = urllib.request.Request(endpoint, data=payload, method='POST', headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                upstream = json.loads(resp.read(2 * 1024 * 1024).decode('utf-8', 'replace'))
+            msg = (((upstream.get('choices') or [{}])[0].get('message') or {}).get('content'))
+            if isinstance(msg, list): msg = ''.join(x.get('text', '') for x in msg if isinstance(x, dict))
+            if not isinstance(msg, str) or not msg.strip(): return self._json(502, {'ok': False, 'error': '模型未返回可解析内容'})
+            cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', msg.strip(), flags=re.I).strip()
+            try: parsed = json.loads(cleaned)
+            except Exception: parsed = None
+            return self._json(200, {'ok': True, 'model': model, 'result': parsed, 'raw': msg[:120000]})
+        except urllib.error.HTTPError as e:
+            return self._json(502, {'ok': False, 'error': f'模型接口返回 HTTP {e.code}'})
+        except Exception as e:
+            return self._json(502, {'ok': False, 'error': '模型接口调用失败：' + str(e)[:180]})
 
     def _upload(self, k, body):
         """接收 base64 文件，走 importer 云端 OCR 抽取字段。支持 PDF/DOCX/XLSX/CSV/TXT/图片。"""
