@@ -341,8 +341,8 @@ function progressBar(stepIndex, steps){
   }).join('')+'</div>';
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function money(n){return '¥'+(Number(n)||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});}
-function num(n){return (Number(n)||0).toLocaleString('zh-CN',{maximumFractionDigits:4});}
+function money(n){return '¥'+(Number(fv(n))||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function num(n){return (Number(fv(n))||0).toLocaleString('zh-CN',{maximumFractionDigits:4});}
 function badge(s){return '<span class="badge '+(stateColor[s]||'b-neutral')+'"><span class="p"></span>'+esc(s||'—')+'</span>';}
 function fv(v){ if(v==null||v==='')return ''; if(typeof v==='object'){ if('text'in v)return v.text; if('select'in v)return v.select; if('number'in v)return v.number; if('currency'in v)return v.currency; if('checkbox'in v)return v.checkbox?'是':'否'; if('date'in v)return (v.date||'').slice(0,10); if('title'in v)return v.title; return '';} return v; }
 
@@ -566,6 +566,7 @@ async function showHome(){
     recentHtml='<table><thead><tr><th>合同编码</th><th>卡片名称</th><th>当前状态</th><th>最后更新</th><th>下一步</th></tr></thead><tbody>'
       +recent.map(function(x){
         var label=NEXT_ACTION_LABEL[x.next_action]||'查看';
+        if(x.next_action==='approve'&&!canApprove()) label='查看审批进度';
         return '<tr><td class="tnum">'+esc(x.code)+'</td><td>'+esc(x.name||'—')+'</td>'
           +'<td>'+stageBadge(x.stage)+'</td><td>'+esc(x.updated_at||'—')+'</td>'
           +'<td class="tbl-actions"><button class="btn btn-secondary btn-sm" data-action="next-action" data-id="'+esc(x.card_id)+'">'+esc(label)+'</button></td></tr>';
@@ -631,7 +632,9 @@ function renderCards(list,title,showNew){
     // 步骤化推进：根据状态显示"下一步"，只有一个主操作高亮
     if(canCreate() && (st==='草稿'||st==='退回')){
       var step, stepAction, stepLabel;
-      if(ovN===0){
+      if(c._stage && c._stage.blocking_reasons.length){
+        stepAction='card-detail'; stepLabel='补齐资料并核对';
+      } else if(ovN===0){
         // 第一步：录入金额
         stepAction='edit-overview'; stepLabel='① 录入金额';
       } else if(ldN===0){
@@ -654,7 +657,7 @@ function renderCards(list,title,showNew){
       var done = (ovN>0?1:0)+(ldN>0?1:0);
       stepBadge='<span class="hint" style="font-size:12px">('+(done===0?'未开始':done===1?'已录金额':'已生成台账')+')</span>';
     }
-    return '<tr><td class="tnum">'+esc(fv(c['合同编码']))+'</td><td>'+esc(fv(c['卡片名称']))+'</td><td>'+esc(fv(c['费用类型']))+'</td><td>'+esc(fv(c['承租方']))+'</td><td>'+esc(fv(c['提交人']))+'</td><td>'+badge(st)+stepBadge+'</td><td class="tbl-actions">'+acts+'</td></tr>';
+    return '<tr><td class="tnum">'+esc(fv(c['合同编码']))+'</td><td>'+esc(fv(c['卡片名称']))+'</td><td>'+esc(fv(c['费用类型']))+'</td><td>'+esc(fv(c['承租方']))+'</td><td>'+esc(fv(c['提交人']))+'</td><td>'+(c._stage?stageBadge(c._stage.stage):badge(st)+stepBadge)+'</td><td class="tbl-actions">'+acts+'</td></tr>';
   }).join('');
   var head = showNew && canCreate() ? '<div style="margin-bottom:16px"><button class="btn btn-primary" data-action="open-card">＋ 新建租赁卡片</button></div>' : '';
   renderList(title,(showNew?'全部租赁卡片':'我提交的租赁卡片'), head+(list.length?table(['合同编码','卡片名称','费用类型','承租方','提交人','状态','操作'],rows):empty('暂无卡片')));
@@ -707,18 +710,36 @@ function primaryActionHtml(stage, id, approvalState){
     return '<button class="btn btn-primary btn-sm" data-action="edit-basic">核对并修改基础信息</button>';
   if(na==='submit-card' && canEdit)
     return '<button class="btn btn-primary btn-sm" data-action="card-submit" data-id="'+esc(id)+'">提交审批</button>';
+  if(na==='continue-review' && canEdit && id)
+    return '<button class="btn btn-primary btn-sm" data-action="card-submit" data-id="'+esc(id)+'">核对完成，提交审批</button>';
   if(na==='approve' && canApprove())
     return '<span class="hint">该卡片待审批，请在下方使用「通过 / 退回」处理</span>';
   if(na==='open-payment')
     return '<button class="btn btn-secondary btn-sm" data-action="show-home-next" data-view-target="payments">查看付款清单</button>';
   if(na==='edit-card' && canEdit)
     return '<button class="btn btn-primary btn-sm" data-action="edit-basic">修改合同</button>';
-  return '<span class="hint">当前无可执行操作</span>';
+  return '<span class="hint">当前步骤已完成；如需继续，请查看上方的操作提示。</span>';
+}
+function tkCountLabel(list){
+  var a=list||[], last=a.length?a[a.length-1]:null;
+  if(!last) return '暂无记录';
+  return '共 '+a.length+' 次，最近为 '+(fv(last['状态'])||'待处理');
 }
 
 /* 关联记录：审批 / 付款 / 凭证 / 版本 —— 详情页闭环的最后一段 */
 function renderRelations(ctx){
   var tk=ctx.tickets||[], pay=ctx.payments||[], vou=ctx.vouchers||[], ver=ctx.versions||[];
+  var drafts=[];
+  ver.forEach(function(v){
+    try{var d=JSON.parse(fv(v['快照JSON'])||'{}');
+      if(d.kind==='payment-draft-v1'&&Array.isArray(d.rows)) drafts.push({date:fv(v['变更日期'])||'',rows:d.rows});
+    }catch(e){}
+  });
+  drafts.sort(function(a,b){return b.date.localeCompare(a.date);});
+  var original=drafts.length?drafts[0].rows:[];
+  var originalHtml=original.length?table(['费用期间','原始应付日','租金','管理费','合计','税率'],original.map(function(p){
+    return '<tr>'+['period','pay_date','rent','mgmt','total','tax'].map(function(k){return '<td>'+esc(p[k]||'待补充')+'</td>';}).join('')+'</tr>';
+  }).join('')):'';
   function block(title, count, tableHtml){
     return '<div class="card"><div class="card-h"><div class="card-t">'+esc(title)+'</div>'
       +'<span class="hint">'+(count?count+' 条':'暂无')+'</span></div><div class="card-b">'
@@ -752,6 +773,7 @@ function renderRelations(ctx){
   return block('审批记录', tk.length, tkHtml)
     +block('付款记录', pay.length, payHtml)
     +block('凭证记录', vou.length, vouHtml)
+    +block('合同付款明细快照（待核对原始依据）', original.length, originalHtml)
     +block('版本记录', ver.length, verHtml);
 }
 
@@ -784,6 +806,9 @@ async function renderDetail(passedId){
         +'<button class="btn btn-destructive btn-sm" data-action="reject" data-id="'+esc(id)+'">退回</button>';
     }
   }
+  if(canCreate() && st==='待审' && fv(curCard['提交人'])===(ME&&ME.name)){
+    actions+='<button class="btn btn-secondary btn-sm" data-action="withdraw" data-id="'+esc(id)+'">撤回提交</button>';
+  }
   if(canCreate() && editable){
     actions+='<button class="btn btn-secondary btn-sm" data-action="edit-basic">编辑基础信息</button>';
   }
@@ -798,7 +823,7 @@ async function renderDetail(passedId){
     +kv('约定付款日',curCard['约定付款日期'])+kv('提单部门',curCard['提单部门'])
     +kv('是否含税',curCard['是否含税'])+kv('税率',curCard['税率'])+kv('是否IFRS',curCard['是否IFRS'])
     +kv('IFRS折现率',curCard['IFRS折现率'])+kv('预付租金',money(curCard['预付租金']))
-    +kv('合同状态',curCard['合同状态'])+kv('审批状态',badge(st))
+    +kv('合同状态',curCard['合同状态'])+kv('审批状态',st)
     +kv('备注',curCard['备注'])
     +'</div></div></div>';
 
@@ -807,7 +832,7 @@ async function renderDetail(passedId){
   var errs=(vres.errors||[]), warns=(vres.warnings||[]);
   var statusHtml='<div class="card"><div class="card-h"><div class="card-t">当前状态</div>'
     +'<span>'+stageBadge(stage.stage)+'</span></div><div class="card-b">'
-    +'<div class="kv">'+kv('当前阶段',stage.stage)+kv('审批状态',badge(st))
+    +'<div class="kv">'+kv('当前阶段',stage.stage)+kv('审批状态',st)
       +kv('最后更新',(fv(curCard['提交时间'])||'').slice(0,10)||'—')
       +kv('阻塞项',blockers.length?String(blockers.length)+' 项':'无')+'</div>'
     +((blockers.length||errs.length)
@@ -821,6 +846,7 @@ async function renderDetail(passedId){
         ? '<button class="btn btn-secondary btn-sm" data-action="ocr-confirm" data-id="'+esc(id)+'">识别结果已人工核对</button>'
         : '')
     +'<span class="hint">这是该卡片当前唯一的下一步</span></div>'
+    +'<div class="hint" style="margin-top:8px">审批摘要：'+esc((blockers.length?'有 '+blockers.length+' 项待处理':'当前没有阻塞项'))+'；提交人 '+esc(fv(curCard['提交人'])||'未记录')+'；审批历史 '+tkCountLabel(ctx.tickets||[])+'</div>'
     +'</div></div>';
 
   document.getElementById('content').innerHTML = '<div class="page-title">卡片 '+(esc(fv(curCard['合同编码']))||'')+'</div>'
@@ -1140,21 +1166,22 @@ async function genLedger(id, fromIfrs){
 /* 新建卡片 */
 function openCard(){
   segs=[];
+  window._ocrApplied=false; window._ocrText='';
   window._ocrPeriods=[]; window._ocrFilled={};   // 清掉上一张卡片的识别残留
   window._ptable=[]; window._sharing=[]; window._oneoff=[]; window._taxRate=''; window._ocrFin=[];   // 明细表草稿复位
   document.getElementById('dlgCard').querySelector('.dialog-h').textContent='新建租赁卡片';
   setDlgConfirm('create-card','保存草稿');
   document.getElementById('dlgCardBody').innerHTML =
     '<div style="margin-bottom:14px;padding:12px;border:1px solid var(--hairline);border-radius:8px">'
-    +'<div class="hint" style="margin-bottom:8px">可上传盖章合同扫描件，AI 识别后自动填充基础信息（初稿，可人工修改）</div>'
+    +'<h3>1 · 导入合同</h3><div class="hint" style="margin-bottom:8px">上传完整合同即可。系统只生成待核对草稿，不会直接写入正式台账；扫描失败可改为手工登记。</div>'
     +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="file" id="ocrFile" accept=".png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt" style="font-size:13px">'
-    +'<button class="btn btn-secondary btn-sm" data-action="ocr-run">识别</button>'
+    +'<button class="btn btn-primary btn-sm" data-action="ocr-run">上传并识别</button>'
     +'<button class="btn btn-ghost btn-sm" data-action="ocr-text">查看识别原文</button>'
-    +'<button class="btn btn-ghost btn-sm" data-action="ocr-ai">AI 扫描</button>'
+    +'<button class="btn btn-ghost btn-sm" data-action="ocr-ai">其他导入方式</button>'
     +'<span id="ocrStatus" class="hint"></span></div>'
     +'<div id="ocrSegHint" class="hint" style="margin-top:6px"></div>'
     +'<div id="ocrAiBox" style="display:none;margin-top:8px;padding:10px;border:1px dashed var(--hairline);border-radius:8px">'
-    +'<div class="hint" style="margin-bottom:6px"><b>方式一（推荐）</b>：在 WorkBuddy 对话里说一句「AI 扫描这份合同」，助手会用已安装的 <b>lease-ai-scan 技能</b>读图，生成<b>预填链接</b>或<b>结果 JSON</b> 粘到下面即可（无需复制提示词）。<br><b>方式二（没装技能的人，任意 AI 均可）</b>：点「复制 AI 提示词」，把提示词和合同一起发给任意通用 AI（ChatGPT / Claude / 豆包…），再把它的输出粘回来。<br>无论哪种来源，系统都会<b>自动归一字段</b>并给出<b>导入报告</b>；读不到的会明确列出，不会静默丢数据。</div>'
+    +'<div class="hint" style="margin-bottom:6px"><b>辅助导入</b>：仅供测试或开发人员使用。财务人员日常操作不需要复制提示词、JSON或Skill结果。</div>'
     +'<textarea id="ocrAiText" placeholder="粘贴：（1）AI 扫描链接（…/?draft=…）　或　（2）任意 AI 输出的 JSON" style="width:100%;min-height:64px;font-size:12px"></textarea>'
     +'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'
     +'<button class="btn btn-primary btn-sm" data-action="ocr-ai-import">导入</button>'
@@ -1162,21 +1189,22 @@ function openCard(){
     +'</div>'
     +'<div id="ocrAiReport" style="margin-top:8px;font-size:12px;line-height:1.7"></div>'
     +'</div>'
-    +'<div id="ocrDetail" class="ocr-detail" style="margin-top:10px;display:none"></div></div>'
-    +'<div class="grid grid-2">'
-    +fld('合同编码*','card_code','')+fld('卡片名称（给这张卡起的备注名，如"红山店2025-租金"）','card_name','')
+    +'</div><h3>2 · 先确认合同身份</h3><div class="hint" style="margin-bottom:8px">先确认这份文件是哪一份合同，再核对金额。带“*”字段必须在提交前补齐。</div><div class="grid grid-2">'
+    +fld('合同编号*','card_code','')+fld('合同/场地简称*','card_name','')
     +sel('费用类型','card_fee',['租金','管理费','租赁税金'])
-    +fld('承租方','card_tenant','')+fld('实际付款方','card_payer','')+fld('实际收款方','card_receiver','')
+    +fld('承租方*','card_tenant','')+fld('实际付款方*','card_payer','')+fld('出租方/实际收款方*','card_receiver','')
     +fld('租赁地址','card_addr','')+fld('省级','card_prov','')+fld('市级','card_city','')+fld('区镇','card_dist','')
     +fld('片区','card_area','')+fld('业务模块','card_module','')
     +fld('建筑面积','card_barea','number')+fld('实用面积','card_uarea','number')
-    +fld('租赁起始日','card_start','date')+fld('租赁终止日','card_end','date')
+    +fld('租赁起始日*','card_start','date')+fld('租赁终止日*','card_end','date')
+    +'</div><h3>3 · 费用与付款规则</h3><div class="grid grid-2">'
     +sel('计费算法','card_alg',['自然月','整月'])+sel('结算方式','card_settle',['付当月','预付下月','付两月','预付两月','付当季','预付下季','付半年','预付半年','付当年','预付下年'])
     +fld('约定付款日','card_payday','number')+sel('提单部门','card_dept',['财务','业务'])
     +sel('是否含税','card_tax',['含税','不含税'])+sel('是否IFRS','card_ifrs',['是','否'])
-    +fld('税率','card_taxrate','')+fld('IFRS折现率','card_rate','number')+fld('预付租金','card_prepaid','number')
+    +fld('税率','card_taxrate','')+fld('IFRS年折现率（选择是时必填；0.04表示4%）','card_rate','number')+fld('预付租金','card_prepaid','number')
     +fld('备注（递增约定等）','card_note','')
-    +'</div>';
+    +'</div><h3>4 · 明细核对</h3><div class="hint" style="margin-bottom:8px">租金、管理费、付款计划、分摊和一次性费用分别核对；识别结果只是草稿，来源不明或推算的行必须人工确认。</div><div id="ocrDetail" class="ocr-detail" style="overflow-x:auto"></div>';
+  renderDetailTables();
   showDlg('dlgCard');
 }
 // 期次 → 起止日：保留合同起始日的"日"（月中起租不被拉回当月1日），跨月末自动收敛；
@@ -1226,6 +1254,13 @@ function rebuildSegsFromPeriods(){
 // 由付款计划表推导期次偏移（与 importer._period_offsets 对齐），把合计金额摊到月
 function _periodOffsets(period, startIso){
   if(!period || !/^\d{4}-\d{2}-\d{2}/.test(String(startIso||''))) return null;
+  var iso=String(period).match(/^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$/);
+  if(iso){
+    var base=new Date(startIso+'T00:00:00'), first=new Date(iso[1]+'T00:00:00'), last=new Date(iso[2]+'T00:00:00');
+    if(isNaN(first)||isNaN(last)||last<first) return null;
+    return [(first.getFullYear()-base.getFullYear())*12+first.getMonth()-base.getMonth()+1,
+      (last.getFullYear()-base.getFullYear())*12+last.getMonth()-base.getMonth()+1];
+  }
   var m=String(period).match(/(\d{4})\s*年\s*(\d{1,2})(?:\s*月)?(?:\s*(?:至|到|-|—|–)\s*(\d{1,2})\s*月)?/);
   if(!m) return null;
   var y=+m[1], ms=+m[2], me=m[3]?+m[3]:ms;
@@ -1244,6 +1279,20 @@ function _paymentTableToPeriods(ptable, startIso){
     out.push({期次起:offs[0], 期次止:offs[1], 金额:monthly.toFixed(2)});
   });
   return out;
+}
+// OCR 只返回 segments 时也生成可编辑付款计划行，避免“已识别 N 段、明细 0 期”。
+function _segmentsToPaymentRows(periods,startIso){
+  if(!Array.isArray(periods)||!periods.length||!/^\d{4}-\d{2}-\d{2}/.test(String(startIso||''))) return [];
+  return periods.map(function(x){
+    var a=Number(x['期次起'])||1, b=Number(x['期次止'])||a;
+    if(b<a) return null;
+    var s=periodStart(startIso,a-1), e=periodStart(startIso,b);
+    if(!s||!e) return null;
+    e=addDays(e,-1);
+    var months=b-a+1, monthly=Number(String(x['金额']||'').replace(/,/g,''))||0;
+    return {period:s+'~'+e,pay_date:'',
+      rent:(monthly*months).toFixed(2),mgmt:'',total:(monthly*months).toFixed(2),tax:''};
+  }).filter(Boolean);
 }
 // 回填：空则填；若当前值来自上一次识别则允许刷新；用户手工填过则保留不覆盖
 function setOcrVal(id,val){
@@ -1279,7 +1328,7 @@ async function ocrRun(){
     r=await API.req('POST','/api/upload',{filename:f.name,data:data},180000);   // 引擎首次加载可能较久
   }catch(err){
     st.textContent='识别超时或网络中断：'+f.name+'（'+(f.size/1024/1024).toFixed(2)+'MB）。'
-      +'请缩小文件（建议单页、不超过 5MB）后重试，或先手工录入。';
+      +'请检查文件是否超过 50MB、PDF 是否超过 50 页，或改为手工录入。';
     return;
   }
   if(!r.data.ok || r.data.error){st.textContent='识别失败：'+(r.data.error||'请重试');return;}
@@ -1313,8 +1362,9 @@ function applyOcrResult(data){
   fill('card_code',pick(fd['合同编号'],fd['合同编码']),'合同编码');
   fill('card_name',fd['卡片名称'],'卡片名称');
   fill('card_tenant',fd['承租方'],'承租方');
-  fill('card_receiver',pick(fd['出租方'],fd['实际收款方']),'出租方→实际收款方');
-  fill('card_payer',pick(fd['实际付款方'],fd['承租方']),'实际付款方');
+  fill('card_receiver',pick(fd['出租方'],fd['实际收款方']),'出租方/实际收款方');
+  // 实际付款方不能用承租方自动代填；两者在财务流程中可能不同，缺失时必须人工确认。
+  fill('card_payer',fd['实际付款方'],'实际付款方');
   fill('card_addr',fd['租赁地址'],'租赁地址');
   fill('card_prov',fd['省级'],'省级');
   fill('card_city',fd['市级'],'市级');
@@ -1391,6 +1441,10 @@ function applyOcrResult(data){
 
   // 可编辑明细：付款计划 / 分摊比例 / 一次性费用（识别结果作初值，人工可改；保存时一并落库）
   window._ptable=(ptable||[]).map(function(r){return {period:r.period||'',pay_date:r.pay_date||'',rent:r.rent||'',mgmt:r.mgmt||'',total:r.total||'',tax:r.tax||''};});
+  // 后端 OCR 可能只返回按期次归纳的 segments；此时自动生成可编辑行。
+  if(!window._ptable.length && window._ocrPeriods.length){
+    window._ptable=_segmentsToPaymentRows(window._ocrPeriods,gv('card_start'));
+  }
   window._sharing=(sharing||[]).map(function(s){return {dept:s.dept||'',ratio:(s.ratio==null?0:Number(s.ratio)),cost_center:s.cost_center||'',note:s.note||''};});
   window._oneoff=(data.oneoff_fees||[]).map(function(o){return {'费用类型':o['费用类型']||o.type||'','金额':String(o['金额']||o.amount||''),'说明':o['说明']||o.note||''};});
   window._ocrFin=fin;
@@ -1408,13 +1462,13 @@ function applyOcrResult(data){
   var missed=[];
   [['租赁起始日','租赁起始日'],['租赁终止日','租赁终止日'],['承租方','承租方']]
    .forEach(function(p){ if(!fd[p[1]]) missed.push(p[0]); });
-  var msg='识别完成。';
+  var msg='识别完成，当前结果仅为待人工核对草稿。';
   if(got.length) msg+='已填：'+got.join('、')+'。';
   if(kept.length) msg+='已保留你手工填写的内容：'+kept.join('、')+'。';
   if(segList.length) msg+='付款计划 '+segList.length+' 段已转为金额概览草稿'
     +(window._ocrPeriods.length&&gv('card_start')?'':'（待填租赁起始日后按最新日期重算）')+'。';
   else msg+='未识别到付款计划表，金额概览需手工录入。';
-  if(ptable.length) msg+='付款计划表 '+ptable.length+' 期已识别（见下方明细）。';
+  if(window._ptable.length) msg+='付款计划明细 '+window._ptable.length+' 期已生成（可编辑核对）。';
   if(sharing.length) msg+='分摊比例 '+sharing.length+' 项已预填，保存卡片时自动写入。';
   if(nomatch.length) msg+=nomatch.join('；')+'。';
   if(confItems.length) msg+='以下字段有多个候选值，未自动填，请人工确认：'+confItems.join('；')+'。';
@@ -1652,7 +1706,11 @@ function renderDetailTables(){
   var TH='padding:3px 4px;text-align:left';
   var OPEN='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:rgba(127,127,127,.12)">';
   var h='';
+  var sourceTag=window._ocrApplied
+    ? '<span class="badge b-warning" style="margin-left:6px">识别草稿·需人工确认</span>'
+    : '<span class="badge b-neutral" style="margin-left:6px">人工录入</span>';
   h+='<div style="font-weight:600;margin:10px 0 4px">付款计划（'+pt.length+' 期，可编辑）'
+    +sourceTag
     +'<button class="btn btn-ghost btn-sm" data-action="detail-add" data-tbl="pt" style="margin-left:8px">＋ 行</button></div>'
     +OPEN+'<th style="'+TH+'">费用所属期间</th><th style="'+TH+'">应付日</th><th style="'+TH+'">租金</th>'
     +'<th style="'+TH+'">管理费</th><th style="'+TH+'">合计</th><th style="'+TH+'">税率</th><th></th></tr></thead><tbody>';
@@ -1666,6 +1724,7 @@ function renderDetailTables(){
   h+='</tbody></table>';
   var rsum=sh.reduce(function(a,b){return a+(+b.ratio||0);},0);
   h+='<div style="font-weight:600;margin:10px 0 4px">费用部门分摊比例（'+sh.length+' 项，合计 '+(rsum*100).toFixed(0)+'%）'
+    +sourceTag
     +'<button class="btn btn-ghost btn-sm" data-action="detail-add" data-tbl="sh" style="margin-left:8px">＋ 行</button></div>'
     +OPEN+'<th style="'+TH+'">承担部门</th><th style="'+TH+'">分摊比例%</th><th style="'+TH+'">成本中心</th><th style="'+TH+'">备注</th><th></th></tr></thead><tbody>';
   sh.forEach(function(s,i){
@@ -1676,6 +1735,7 @@ function renderDetailTables(){
   });
   h+='</tbody></table>';
   h+='<div style="font-weight:600;margin:10px 0 4px">一次性费用（'+oo.length+' 条）'
+    +sourceTag
     +'<button class="btn btn-ghost btn-sm" data-action="detail-add" data-tbl="oo" style="margin-left:8px">＋ 行</button></div>'
     +OPEN+'<th style="'+TH+'">费用类型</th><th style="'+TH+'">金额</th><th style="'+TH+'">说明</th><th></th></tr></thead><tbody>';
   oo.forEach(function(x,i){
@@ -1796,6 +1856,15 @@ async function createCard(){
     alert('保存未返回卡片标识，无法继续写入金额概览/分摊，请刷新列表确认后再操作。');
     return;
   }
+  if((window._ptable||[]).length){
+    var pr=await API.req('POST','/api/cards/'+r.data.card_id+'/payment-draft',{rows:window._ptable});
+    if(!pr.data.ok||!pr.data.write_confirmed){
+      document.getElementById('ocrStatus').textContent='卡片已创建，但付款明细未确认保存。请保留本页，点击重试；不要重复建卡。';
+      window._pendingDraftCardId=r.data.card_id;
+      setDlgConfirm('retry-payment-draft','重试保存付款明细');
+      return;
+    }
+  }
   // OCR 已形成金额概览草稿时，随卡片创建自动落库；用户仍可在下一步复核修改
   if(segs && segs.length && r.data.card_id){
     var ov=await API.req('POST','/api/cards/'+r.data.card_id+'/overview',{segments:segs.map(function(x){return {'租赁起始日':x.s,'租赁终止日':x.e,'月份数':x.months,'月金额':x.amt,'金额小计':x.total};})});
@@ -1838,7 +1907,7 @@ async function createCard(){
   }
   window._ocrPeriods=[]; window._ocrFilled={}; window._ocrSharing=[];
   window._ptable=[]; window._sharing=[]; window._oneoff=[]; window._taxRate=''; window._ocrFin=[];
-  closeDlg('dlgCard'); showMine();
+  closeDlg('dlgCard'); showDetail(r.data.card_id);
 }
 
 /* 审批 */
@@ -1870,15 +1939,31 @@ async function confirmOcr(id){
 }
 
 async function doSubmit(id){
-  if(!confirm('提交该卡片到审批？'))return;
+  var latest=await API.req('GET','/api/cards/'+encodeURIComponent(id));
+  if(!latest.data.ok||!latest.data.card){alert(latest.data.error||'未能读取当前合同，请重试');return;}
+  var submittingCard=latest.data.card;
+  var missing=[];
+  [['合同编号','合同编码'],['承租方','承租方'],['实际付款方','实际付款方'],
+   ['实际收款方','实际收款方'],['租赁起始日','租赁起始日'],['租赁终止日','租赁终止日']]
+   .forEach(function(x){ if(!String(fv(submittingCard[x[1]])||'').trim()) missing.push(x[0]); });
+  if(missing.length){ alert('提交前还需要补齐：'+missing.join('、')+'。\\n请回到「编辑基础信息」完成核对。'); return; }
+  if(!confirm('确认提交合同 '+fv(submittingCard['合同编码'])+'？\n请确认已核对主体、费用、付款计划和识别疑点。'))return;
   // 提交前提示：是否IFRS=是但折现率缺失会使 IFRS 台账无法生成
-  if(curCard && fv(curCard['是否IFRS'])==='是' && !(parseFloat(fv(curCard['IFRS折现率'])) > 0)){
+  if(fv(submittingCard['是否IFRS'])==='是' && !(parseFloat(fv(submittingCard['IFRS折现率'])) > 0)){
     alert('该合同「是否IFRS=是」但「IFRS折现率」未填。\nIFRS 台账无法生成，请先在「编辑基础信息」补充折现率后再提交。');
     return;
   }
   var r=await API.req('POST','/api/cards/'+id+'/submit');
   if(!r.data.ok){alert(r.data.error||'提交失败');return;}
   if(canApprove())showTodo(); else showMine();
+}
+
+async function doWithdraw(id){
+  if(!confirm('确认撤回本次提交？撤回后卡片回到草稿状态，审批记录仍会保留。'))return;
+  var r=await API.req('POST','/api/cards/'+id+'/withdraw',{意见:'提交人撤回'});
+  if(!r.data.ok){alert(r.data.error||'撤回失败');return;}
+  alert('已撤回，可修改后重新提交。');
+  showDetail(id);
 }
 
 async function doDelete(id){
@@ -1901,12 +1986,15 @@ async function showPayments(){
 }
 function renderPayments(list){
   var rows=list.map(function(p){
+    var paid=fv(p['已付'])==='是';
+    var pid=fv(p['关联卡片ID'])||fv(p['卡片ID'])||'';
+    var shortId=pid?pid.slice(0,8)+'…':'待补合同';
     return '<tr><td>'+esc(fv(p['费用所属期间']))+'</td>'
-      +'<td>'+esc(fv(p['关联卡片ID'])?((function(){return '';})()):'')+'</td>'
+      +'<td><b>'+esc(fv(p['合同编码'])||shortId)+'</b><br><span class="hint">'+esc(fv(p['费用类型'])||'租赁付款')+'</span></td>'
       +'<td class="num tnum">'+money(p['计划付款金额'])+'</td>'
       +'<td>'+esc(fv(p['结算方式']))+'</td>'
       +'<td class="tnum">'+esc((fv(p['约定付款日期'])||'').slice(0,10))+'</td>'
-      +'<td>'+esc(fv(p['已付'])==='是'?'<span class="badge b-success"><span class="p"></span>已付</span>':'<span class="badge b-neutral"><span class="p"></span>未付</span>')+'</td>'
+      +'<td>'+(paid?'<span class="badge b-success"><span class="p"></span>已付</span>':'<span class="badge b-neutral"><span class="p"></span>未付</span>')+'</td>'
       +'<td class="tbl-actions"><button class="btn btn-ghost btn-sm" data-action="pay-toggle" data-id="'+esc(p['record_id'])+'">'+(paySel.has(p['record_id'])?'✓ 已勾':'勾选')+'</button></td></tr>';
   }).join('');
   var bar = '<div style="margin-bottom:16px">'
@@ -2120,6 +2208,7 @@ document.addEventListener('click',async function(e){
     case 'next-action': showDetail(id); break;   // 首页/列表的"下一步"统一进入该卡片详情
     case 'ocr-confirm': await confirmOcr(id); break;
     case 'card-submit': doSubmit(id); break;
+    case 'withdraw': doWithdraw(id); break;
     case 'card-delete': doDelete(id); break;
     case 'approve': openOpinion(id,'通过'); break;
     case 'reject': openOpinion(id,'退回'); break;
@@ -2142,6 +2231,14 @@ document.addEventListener('click',async function(e){
     case 'ocr-ai': ocrAiToggle(); break;
     case 'ocr-ai-import': ocrAiImport(); break;
     case 'ocr-ai-prompt': ocrAiCopyPrompt(); break;
+    case 'retry-payment-draft':
+      var retry=await API.req('POST','/api/cards/'+window._pendingDraftCardId+'/payment-draft',{rows:window._ptable||[]});
+      if(retry.data.ok&&retry.data.write_confirmed){
+        var savedId=window._pendingDraftCardId;
+        closeDlg('dlgCard'); showDetail(savedId);
+        alert('付款明细已保存并回读。请在详情中继续录入金额概览、分摊和一次性费用后再计算。');
+      }else{document.getElementById('ocrStatus').textContent=retry.data.error||'回读尚未确认，请重试';}
+      break;
     case 'detail-add': {
       var _t=el.dataset.tbl;
       if(_t==='pt') (window._ptable=window._ptable||[]).push({period:'',pay_date:'',rent:'',mgmt:'',total:'',tax:''});
@@ -2253,11 +2350,6 @@ document.getElementById('btnLogout').addEventListener('click',logout);
   document.getElementById('loginView').style.display='flex';
 })();
 </script>
+<script src="/ui-workflow.js"></script>
 </body>
 </html>
-
-
-
-
-
-

@@ -124,6 +124,20 @@ class TestColonLost(unittest.TestCase):
         f = importer.extract('计租面积（平方米） 1,280.00')['fields']
         self.assertEqual(f.get('area'), '1280.00')
 
+    def test_mixed_colon_values_keep_conflict(self):
+        r = importer.extract('月租金：1,000.00\n月租金 2,000.00')
+        self.assertNotIn('monthly_amount', r['fields'])
+        self.assertEqual(len(r['conflicts']['monthly_amount']), 2)
+
+    def test_empty_label_does_not_read_next_line(self):
+        r = importer.extract('月租金：\n2025年1月起执行')
+        self.assertNotIn('monthly_amount', r['fields'])
+
+    def test_currency_and_ascii_unit(self):
+        r = importer.extract('月租金 ¥ 2,000.00\n计租面积(平方米) 100.00')
+        self.assertEqual(r['fields']['monthly_amount'], '2000.00')
+        self.assertEqual(r['fields']['area'], '100.00')
+
     def test_non_numeric_label_value_not_taken_as_amount(self):
         """标签后是非数字说明时不产生金额。"""
         f = importer.extract('月租金按季度支付，详见附件')['fields']

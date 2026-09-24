@@ -3,6 +3,7 @@ import base64
 import csv
 import datetime
 import io
+import os
 import json
 import re
 import sys
@@ -84,8 +85,15 @@ def split_region(address):
 def _labeled_value(text, labels):
     """匹配「标签[(单位)]：值」，标签后的括号单位可省略。允许『2.1』『第一条』等编号前缀（不要求行首）；一行多字段时用双空格截断。"""
     alt = '|'.join(re.escape(x) for x in labels)
-    pattern = (r'(?:' + alt + r')\s*(?:[（(][^）)\n]{0,12}[）)])?\s*[:：\t]\s*([^\n]+?)(?=\s{2,}|\s*$)')
-    return [x.strip() for x in re.findall(pattern, text, re.MULTILINE) if x.strip()]
+    pattern = (r'(?:' + alt + r')[ \t]*(?:[（(][^）)\r\n]{0,12}[）)])?'
+               r'[ \t]*[:：\t][ \t]*([^\r\n]+?)(?=[ \t]{2,}|[ \t]*\r?$)')
+    values = [x.strip() for x in re.findall(pattern, text, re.MULTILINE) if x.strip()]
+    # OCR常丢失冒号；对金额、面积等标签允许“标签 空格 数值”，但不对主体/自由文本放宽，避免吞整段合同正文。
+    if any(k in ''.join(labels) for k in ('面积', '租金', '管理费', '保证金', '押金')):
+        loose = (r'(?:' + alt + r')[ \t]*(?:[（(][^）)\r\n]{0,12}[）)])?'
+                 r'[ \t]+([￥¥]?[ \t]*\d[\d,，.]*)')
+        values.extend(x.strip() for x in re.findall(loose, text, re.MULTILINE) if x.strip())
+    return values
 
 
 def _parse_number(s):
@@ -394,6 +402,23 @@ def _party_name(text, party, role):
     return v or None
 
 
+def _party_candidates(text, party, role):
+    """返回同一主体标签的候选名称；多个候选必须进入人工冲突，不自动挑第一个。"""
+    patterns = [
+        re.escape(party) + r'\s*[（(]\s*' + re.escape(role) + r'\s*[）)]\s*[:：]?\s*([^\n，。；、]{2,40})',
+        r'(?:^|\n)\s*' + re.escape(role) + r'\s*[:：]\s*([^\n，。；、]{2,40})',
+        r'(?:^|\n)\s*' + re.escape(party) + r'\s*[:：]\s*([^\n，。；、]{2,40})',
+    ]
+    out = []
+    for pat in patterns:
+        for x in re.findall(pat, text, re.MULTILINE):
+            v = re.split(r'\s{2,}', x.strip())[0]
+            v = re.split(r'[甲乙]方[（(]', v)[0].strip()
+            if v and v not in out:
+                out.append(v)
+    return out
+
+
 def extract(text):
     fields, sources, conflicts = {}, {}, {}
     # 1) 租赁期限区间（最可靠）：优先带标签，退化到一行两日期
@@ -434,12 +459,18 @@ def extract(text):
         sources[key] = values[0]
 
     # 2.1) 甲/乙方名称（条款正文里 甲方/乙方 反复出现，通用循环会判为冲突而丢弃）
-    pn = _party_name(text, '甲方', '出租方')
+    party_vals = _party_candidates(text, '甲方', '出租方')
+    if len(party_vals) > 1:
+        conflicts['lessor'] = party_vals
+    pn = party_vals[0] if len(party_vals) == 1 else None
     if pn:
         fields['lessor'] = pn
         sources['lessor'] = pn
         conflicts.pop('lessor', None)
-    pn = _party_name(text, '乙方', '承租方')
+    party_vals = _party_candidates(text, '乙方', '承租方')
+    if len(party_vals) > 1:
+        conflicts['lessee'] = party_vals
+    pn = party_vals[0] if len(party_vals) == 1 else None
     if pn:
         fields['lessee'] = pn
         sources['lessee'] = pn
@@ -605,8 +636,10 @@ def parse(data):
         raw = base64.b64decode(data.get('content', ''), validate=True)
     except (ValueError, TypeError):
         raise ValueError('文件编码无效')
-    if not 0 < len(raw) <= 5 * 1024 * 1024:
-        raise ValueError('请选择不超过5MB的文件')
+    max_mb = int(os.environ.get('ZL_UPLOAD_MAX_MB', '50'))
+    max_pages = int(os.environ.get('ZL_PDF_MAX_PAGES', '50'))
+    if not 0 < len(raw) <= max_mb * 1024 * 1024:
+        raise ValueError(f'请选择不超过{max_mb}MB的文件')
     warnings = []
     if ext in ('.png', '.jpg', '.jpeg'):
         text = ocr(raw)
@@ -616,8 +649,8 @@ def parse(data):
         except ImportError:
             raise ValueError('PDF组件未安装，请让部署人员安装 requirements-import.txt')
         with pymupdf.open(stream=raw, filetype='pdf') as doc:
-            if doc.needs_pass or len(doc) > 8:
-                raise ValueError('请上传未加密、最多8页的PDF；长合同请先拆分关键页')
+            if doc.needs_pass or len(doc) > max_pages:
+                raise ValueError(f'请上传未加密、最多{max_pages}页的PDF；超过边界请联系管理员调整服务器配置')
             pages = []
             for page in doc:
                 value = page.get_text()
@@ -629,7 +662,7 @@ def parse(data):
             text = '\n'.join(pages)
     elif ext in ('.docx', '.xlsx'):
         with zipfile.ZipFile(io.BytesIO(raw)) as z:
-            if len(z.infolist()) > 1000 or sum(i.file_size for i in z.infolist()) > 16000000:
+            if len(z.infolist()) > 5000 or sum(i.file_size for i in z.infolist()) > max_mb * 4 * 1024 * 1024:
                 raise ValueError('文档解压后过大，请精简后重试')
             def xml(path):
                 content = z.read(path)

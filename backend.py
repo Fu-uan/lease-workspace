@@ -33,11 +33,19 @@ import subprocess
 import tempfile
 
 import library_client as lc
+import workflow as W
+
+if os.environ.get('ZL_STORAGE') == 'local':
+    import local_store as lc
 
 getcontext().prec = 28
 
 HERE = Path(__file__).resolve().parent
-CONFIG = json.loads((HERE / "config.json").read_text("utf-8"))
+if os.environ.get('ZL_STORAGE') == 'local':
+    _keys = 'md_suppliers md_depts md_account_rules md_contacts md_entities md_sites md_params cards amount_overview contract_ledger ifrs_detail oneoff_fees cost_share pay_plan vouchers approval_tickets version_snapshots task_pool users_roles'.split()
+    CONFIG = {'tables': {k:k for k in _keys}, 'salt':'lease-local', 'session_ttl_hours':8}
+else:
+    CONFIG = json.loads((HERE / "config.json").read_text("utf-8"))
 SALT = CONFIG["salt"]
 TBL = CONFIG["tables"]
 
@@ -177,6 +185,8 @@ def norm_d(v):
 
 def dnum(v) -> Decimal:
     try:
+        if isinstance(v, dict):
+            v = next(iter(v.values()), 0)
         return Decimal(str(v).replace(",", "") or "0")
     except Exception:
         return Decimal("0")
@@ -521,8 +531,8 @@ def create_card(cur, b):
     with _glob:
         exists = lc.query(TBL["cards"], filt={
             "property": {"property": "合同编码", "text": {"equals": code}}})
-        if exists:
-            return {"ok": False, "error": f"合同编码 {code} 已存在"}
+        if any(val(row, '费用类型') == fee for row in exists):
+            return {"ok": False, "error": f"合同 {code} 的{fee}卡片已存在"}
         rec = {
             "合同编码": {"text": code},
             "卡片名称": {"text": str(b.get("卡片名称") or "").strip()},
@@ -577,6 +587,7 @@ def create_card(cur, b):
         if not card_id:
             rows = lc.query(TBL["cards"], filt={
                 "property": {"property": "合同编码", "text": {"equals": code}}})
+            rows = [r for r in rows if val(r, '费用类型') == fee]
             card_id = rows[0]["record_id"] if rows else ""
         # 写入回读确认：没有 record_id 或回读不到，就不能对外宣称"已写入团队空间"
         confirmed = _readback_ok(TBL["cards"], card_id)
@@ -670,15 +681,28 @@ def save_amount_overview(cur, card_id, segments):
                 "金额小计": {"currency": float(subtotal)},
             })
         # 先写新数据，确认全部成功后再删除旧数据，避免保存失败造成清空
+        old = _overview_by_card(card_id)
         result = lc.add(TBL["amount_overview"], payload)
         failed = [r for r in (result or []) if isinstance(r, dict) and not r.get("success", True)]
         if failed or len([r for r in (result or []) if isinstance(r, dict) and r.get("success", False)]) != len(payload):
             return {"ok": False, "error": "金额概览写入失败：" + str(failed[:2])[:300]}
-        old = _overview_by_card(card_id)
+        ids = [str(r.get("id") or r.get("record_id") or "") for r in result]
+        if not all(ids) or len(set(ids)) != len(payload):
+            return {"ok": False, "write_confirmed": False, "error": "金额概览缺少唯一记录ID，保留旧数据，请核查后重试"}
+        for rid, expected in zip(ids, payload):
+            actual = lc.get_record(TBL["amount_overview"], rid)
+            if not actual:
+                return {"ok": False, "write_confirmed": False, "error": "金额概览回读失败，保留旧数据，请核查后重试"}
+            for key, encoded in expected.items():
+                want = next(iter(encoded.values()))
+                got = val(actual, key, None)
+                matches = (dnum(got) == dnum(want)) if key in ("月份数", "月金额", "金额小计") else str(got or "")[:10] == str(want)[:10] if key in ("租赁起始日", "租赁终止日") else got == want
+                if got is None or not matches:
+                    return {"ok": False, "write_confirmed": False, "error": "金额概览回读内容不一致：" + key}
         for o in old:
-            if o.get("record_id") not in [r.get("id") for r in (result or []) if isinstance(r, dict)]:
+            if o.get("record_id") not in ids:
                 lc.delete(TBL["amount_overview"], [o["record_id"]])
-        return {"ok": True, "segments": len(payload)}
+        return {"ok": True, "segments": len(payload), "write_confirmed": True}
 
 
 # ---- 删除卡片 ----------------------------------------------------------
@@ -911,6 +935,13 @@ def submit_card(cur, card_id):
             return {"ok": False, "error": "卡片不存在"}
         if val(card, "审批状态", "草稿") not in ("草稿", "退回"):
             return {"ok": False, "error": f"状态[{val(card,'审批状态')}]不可提交"}
+        if _ocr_pending(card):
+            return {"ok": False, "error": "识别结果尚未人工确认，请核对后再提交"}
+        validation = validate_card(card_id, card=card)
+        if not validation.get("ok"):
+            return {"ok": False, "error": "；".join(
+                e["message"] for e in validation.get("errors", [])) or "提交校验失败",
+                "validation": validation}
         if not _ledger_by_card(card_id):
             return {"ok": False, "error": "请先生成台账再提交"}
         code = val(card, "合同编码")
@@ -935,6 +966,32 @@ def reject_card(cur, card_id, opinion):
     if not opinion:
         return {"ok": False, "error": "退回必须填写意见"}
     return _decide(cur, card_id, "退回", opinion)
+
+
+def withdraw_card(cur, card_id, opinion="提交人撤回"):
+    """提交人仅可在待审阶段撤回；保留原审批工单并把卡片退回草稿。"""
+    with _glob:
+        card = lc.get_record(TBL["cards"], card_id)
+        if not card:
+            return {"ok": False, "error": "卡片不存在"}
+        if val(card, "审批状态", "") != "待审":
+            return {"ok": False, "error": f"状态[{val(card,'审批状态')}]不可撤回"}
+        if val(card, "提交人", "") != cur.get("name"):
+            return {"ok": False, "error": "只有提交人可以撤回"}
+        t = _find_ticket_active(card_id)
+        if not t:
+            return {"ok": False, "error": "审批工单不存在"}
+        lc.update_checked(TBL["approval_tickets"], [{
+            "record_id": t["record_id"],
+            "properties": {
+                "状态": {"select": "撤回"},
+                "审批人": {"text": cur.get("name", "")},
+                "意见": {"text": opinion or "提交人撤回"},
+                "审批时间": {"date": _now().strftime("%Y-%m-%dT%H:%M:%SZ")},
+            },
+        }])
+        _set_card_state(card_id, "草稿")
+        return {"ok": True, "card_id": card_id, "state": "草稿"}
 
 
 def _decide(cur, card_id, action, opinion):
@@ -1236,10 +1293,11 @@ def generate_payments(cur, card_id):
         area = val(card, "片区")
         module = val(card, "业务模块")
         dept = val(card, "提单部门")
-        # 幂等：清旧付款清单
-        for p in lc.query(TBL["pay_plan"], filt={
-                "property": {"property": "关联卡片ID", "text": {"equals": card_id}}}):
-            lc.delete(TBL["pay_plan"], [p["record_id"]])
+        # Existing payment facts/approvals are immutable under regeneration.
+        existing = lc.query(TBL["pay_plan"], filt={
+                "property": {"property": "关联卡片ID", "text": {"equals": card_id}}})
+        if existing:
+            return {'ok': True, 'payments': len(existing), 'reused': True, 'code': code}
         # 按付款周期把台账月份分组：一个节点只出一笔（非付款节点不生成行）
         rows = sorted(ledger, key=lambda r: (val(r, "月份") or ""))
         month_amounts = [((val(r, "月份") or "")[:7], dnum(r.get("实付金额合计"))) for r in rows]
@@ -1350,16 +1408,24 @@ def _decide_pay(cur, card_id, action, opinion):
 
 def record_payment(cur, payment_id, b):
     """回写实付（自动/模板/手动）。"""
+    try:
+        amount = Decimal(str(b.get("实付金额", "")))
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError()
+        if amount != amount.quantize(Decimal("0.01")):
+            raise ValueError()
+    except Exception:
+        return {"ok": False, "error": "请填写大于0、最多两位小数的实付金额"}
+    try:
+        paid_date = date.fromisoformat(str(b.get("实付日期", ""))).isoformat()
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "请填写有效的实付日期（YYYY-MM-DD）"}
     rec = lc.get_record(TBL["pay_plan"], payment_id)
     if not rec:
         return {"ok": False, "error": "付款明细不存在"}
-    props = {"已付": {"checkbox": True}}
-    amt = b.get("实付金额")
-    if amt not in (None, ""):
-        props["实付金额"] = {"currency": float(amt)}
-    dt = b.get("实付日期")
-    if dt:
-        props["实付日期"] = {"date": norm_d(dt)}
+    props = {"已付": {"checkbox": True},
+             "实付金额": {"currency": float(amount)},
+             "实付日期": {"date": paid_date}}
     lc.update_checked(TBL["pay_plan"], [{"record_id": payment_id, "properties": props}])
     return {"ok": True}
 
@@ -2055,6 +2121,7 @@ def validate_card(card_id, card=None, overview=None, shares=None, ledger=None):
     else:
         same = lc.query(TBL["cards"], filt={
             "property": {"property": "合同编码", "text": {"equals": code}}})
+        same = [r for r in same if val(r, '费用类型') == val(card, '费用类型')]
         if len(same) > 1:
             err("合同编码", "DUPLICATE",
                 "合同编码 %s 已存在 %d 张卡片，疑似重复导入" % (code, len(same)))
@@ -2170,13 +2237,13 @@ def get_card_stage(card, overview=None, ledger=None):
     done = 1                                   # 资料进入（卡片已存在）
     if not blocking:
         done = 2                               # 人工核对通过
-    if overview:
+    if overview and not blocking:
         done = max(done, 3)                    # 业务校验（金额依据已具备）
-    if ledger:
+    if ledger and overview and not blocking:
         done = max(done, 4)                    # 租赁计算（台账已生成）
-    if state == "通过":
+    if state == "通过" and not blocking and overview and ledger:
         done = 6
-    elif state == "待审":
+    elif state == "待审" and not blocking and overview and ledger:
         done = 5
 
     label, action = STAGE_META.get(stage, (stage, ""))
@@ -2293,6 +2360,61 @@ def ocr_confirm(cur, card_id, status="人工已确认"):
                 "write_confirmed": True}
 
 
+def save_payment_draft(cur, card_id, rows):
+    """保存合同原始付款明细快照；不生成付款指令或改变审批状态。"""
+    if cur.get('role') not in (ROLE_ADMIN, ROLE_KEEPER):
+        return {'ok': False, 'error': '无权维护付款明细'}
+    if not isinstance(rows, list) or len(rows) > 600:
+        return {'ok': False, 'error': '付款明细格式错误或超过600行'}
+    keys = ('period', 'pay_date', 'rent', 'mgmt', 'total', 'tax')
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return {'ok': False, 'error': '付款明细必须为对象'}
+        item = {k: str(row.get(k) if row.get(k) is not None else '').strip() for k in keys}
+        for key in ('rent', 'mgmt', 'total'):
+            if item[key]:
+                try:
+                    number = Decimal(item[key].replace(',', ''))
+                    if not number.is_finite() or number < 0:
+                        raise ValueError()
+                except (ValueError, ArithmeticError):
+                    return {'ok': False, 'error': '付款明细金额无效：' + key}
+        if item['pay_date']:
+            try:
+                date.fromisoformat(item['pay_date'])
+            except ValueError:
+                return {'ok': False, 'error': '应付日格式无效'}
+        normalized.append(item)
+    with _glob:
+        card = lc.get_record(TBL['cards'], card_id)
+        if not card or val(card, '审批状态', '') not in ('草稿', '退回'):
+            return {'ok': False, 'error': '仅草稿或退回卡片可保存付款明细'}
+        snapshot = json.dumps({'kind': 'payment-draft-v1', 'rows': normalized,
+                               'review_status': '待人工核对'}, ensure_ascii=False, sort_keys=True)
+        version = 'payment-' + hashlib.sha256(snapshot.encode()).hexdigest()[:24]
+        existing = lc.query(TBL['version_snapshots'], filt={'and': [
+            {'property': {'property': '关联卡片ID', 'text': {'equals': card_id}}},
+            {'property': {'property': '版本号', 'text': {'equals': version}}}]})
+        for record in existing:
+            if val(record, '快照JSON', '') == snapshot:
+                return {'ok': True, 'write_confirmed': True, 'rows': normalized, 'reused': True}
+        result = lc.add(TBL['version_snapshots'], [{
+            '关联卡片ID': {'text': card_id}, '版本号': {'text': version},
+            '变更日期': {'date': _now().isoformat()},
+            '变更原因': {'text': '合同付款明细草稿'},
+            '变更依据': {'text': '人工录入或识别候选值，待人工核对'},
+            '快照JSON': {'text': snapshot}}])
+        rec = result[0] if isinstance(result, list) and result else {}
+        rid = rec.get('id') or rec.get('record_id')
+        saved = lc.get_record(TBL['version_snapshots'], rid) if rid else None
+        confirmed = bool(saved and val(saved, '快照JSON', '') == snapshot
+                         and val(saved, '关联卡片ID', '') == card_id)
+        return {'ok': confirmed, 'write_confirmed': confirmed,
+                'rows': normalized if confirmed else [],
+                'error': '' if confirmed else '付款明细写入尚未回读确认，请保留草稿并重试'}
+
+
 def card_context(card_id):
     """详情页一次取全：卡片 + 阶段 + 校验 + 三台账 + 分摊/一次性费用 + 审批/付款/凭证/版本。
     详情页只需 1 次请求，避免多次串行调用。"""
@@ -2334,13 +2456,19 @@ def card_context(card_id):
         "payments": payments,
         "vouchers": voucher_rows,
         "versions": versions,
+        "intake": W.latest_intake(sys.modules[__name__], card_id),
+        "approval_events": W.events(sys.modules[__name__], card_id, "approval-v2"),
     }
 
+
+_legacy_submit_card = submit_card
+_legacy_record_payment = record_payment
 
 # ---- HTTP --------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        sys.stderr.write("[zl] " + (fmt % args) + "\n")
+        safe = re.sub(r'(token=)[^&\s\"]+', r'\1[redacted]', fmt % args)
+        sys.stderr.write("[zl] " + safe + "\n")
 
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
@@ -2373,6 +2501,12 @@ class Handler(BaseHTTPRequestHandler):
         if not cur:
             self._json(401, {"ok": False, "error": "未登录或会话过期"})
             return None
+        active = find_user(cur['account'])
+        if not active:
+            self._json(401, {'ok':False,'error':'账号已停用或不存在'})
+            return None
+        cur['role'] = val(active, '角色')
+        cur['name'] = val(active, '姓名') or cur['account']
         if roles and cur["role"] not in roles:
             self._json(403, {"ok": False, "error": f"无权操作：需要角色 {roles}"})
             return None
@@ -2384,6 +2518,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p in ("/", "/index.html", "/app"):
                 self._serve_index()
+                return
+            if p == '/ui-workflow.js':
+                script = (HERE / 'ui-workflow.js').read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/javascript; charset=utf-8')
+                self.send_header('Content-Length', str(len(script)))
+                self.end_headers()
+                self.wfile.write(script)
+                return
+            if p == '/api/payment-batches':
+                user = self._require()
+                if user:
+                    rows = list(W.batches(sys.modules[__name__]).values())
+                    if user['role'] not in (ROLE_ADMIN, '付款审批人', '资金管理处'):
+                        rows = [r for r in rows if r['actor'] == user['account']]
+                    self._json(200, {'ok':True,'batches':rows})
                 return
             if p == "/api/me":
                 cur = current(self)
@@ -2538,12 +2688,21 @@ class Handler(BaseHTTPRequestHandler):
             cid = c.get("record_id", "")
             c["_overview_count"] = ov_counts.get(cid, 0)
             c["_ledger_count"] = ld_counts.get(cid, 0)
+            c["_stage"] = get_card_stage(c, overview=[True] if ov_counts.get(cid) else [],
+                                          ledger=[True] if ld_counts.get(cid) else [])
         self._json(200, {"ok": True, "cards": cards})
 
     def _get_card(self, cur, p):
         parts = p.split("/")
         card_id = parts[3]
         action = parts[4] if len(parts) > 4 else None
+        if action not in ('approve', 'reject', 'withdraw', 'validate'):
+            if not W.can_edit(sys.modules[__name__], cur, card_id):
+                self._json(403, {'ok':False, 'error':'只能修改本人账号关联的草稿，旧数据需先完成归属迁移'})
+                return
+        if action == 'delete' and W.events(sys.modules[__name__], card_id, 'approval-v2'):
+            self._json(409, {'ok':False, 'error':'有审批历史的卡片不可删除'})
+            return
         if action == "context":
             self._json(200, card_context(card_id))
             return
@@ -2594,7 +2753,17 @@ class Handler(BaseHTTPRequestHandler):
             ands.append({"property": {"property": "已付", "checkbox": {"equals": False}}})
         if ands:
             filt = {"and": ands}
-        self._json(200, {"ok": True, "payments": list_payments(filt)})
+        rows = list_payments(filt)
+        cards = {r['record_id']: r for r in lc.query(TBL['cards'])}
+        batch_index = {rid:b for b in W.batches(sys.modules[__name__]).values() for rid in b['rows']}
+        for row in rows:
+            card = cards.get(val(row,'关联卡片ID'), {})
+            for field in ('合同编码','卡片名称','费用类型','租赁地址'):
+                row[field] = val(card,field)
+            batch = batch_index.get(row['record_id'], {})
+            row['_batch'] = batch.get('batch','')
+            row['_approval'] = batch.get('state','未提交')
+        self._json(200, {"ok": True, "payments": rows})
 
     def _get_pay_todo(self, cur):
         if cur["role"] not in (ROLE_ADMIN, "付款审批人"):
@@ -2654,6 +2823,17 @@ class Handler(BaseHTTPRequestHandler):
             if not cur:
                 return
 
+            if p == '/api/intake':
+                self._json(200, W.save_intake(sys.modules[__name__], cur, body))
+                return
+            if p == '/api/payment-batch/decide':
+                action = body.get('action')
+                if action not in ('通过', '退回'):
+                    self._json(400, {'ok':False, 'error':'审批动作无效'})
+                    return
+                self._json(200, W.decide_payment(sys.modules[__name__], cur, body.get('batch'), action, body.get('opinion','')))
+                return
+
             if p.startswith("/api/admin/requests/") and p.endswith("/approve"):
                 k = self._require(roles=[ROLE_ADMIN])
                 if not k:
@@ -2711,7 +2891,7 @@ class Handler(BaseHTTPRequestHandler):
                 k = self._require(roles=[ROLE_ADMIN, "付款审批人", "台账维护人"])
                 if not k:
                     return
-                self._json(200, submit_payments(k, body.get("record_ids") or []))
+                self._json(200, W.submit_payment(sys.modules[__name__], k, body.get("record_ids") or []))
                 return
             if p.startswith("/api/payments/approve/"):
                 k = self._require(roles=[ROLE_ADMIN, "付款审批人"])
@@ -2732,7 +2912,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not k:
                     return
                 payment_id = p.split("/api/payments/record/")[1]
-                self._json(200, record_payment(k, payment_id, body))
+                self._json(200, W.record_payment(sys.modules[__name__], k, payment_id, body))
                 return
             if p.startswith("/api/vouchers/generate/"):
                 k = self._require(roles=[ROLE_ADMIN, "年报项目组"])
@@ -2772,6 +2952,9 @@ class Handler(BaseHTTPRequestHandler):
         parts = p.split("/")
         card_id = parts[3]
         action = parts[4] if len(parts) > 4 else None
+        if action == 'payment-draft':
+            self._json(200, save_payment_draft(cur, card_id, body.get('rows')))
+            return
         if action == "validate":
             k = self._require(roles=[ROLE_ADMIN, ROLE_KEEPER, ROLE_APPROVER])
             if not k:
@@ -2802,19 +2985,25 @@ class Handler(BaseHTTPRequestHandler):
             k = self._require(roles=[ROLE_ADMIN, ROLE_KEEPER])
             if not k:
                 return
-            self._json(200, submit_card(k, card_id))
+            self._json(200, W.submit(sys.modules[__name__], k, card_id))
             return
         if action == "approve":
             k = self._require(roles=[ROLE_ADMIN, ROLE_APPROVER])
             if not k:
                 return
-            self._json(200, approve_card(k, card_id, str(body.get("意见") or "").strip()))
+            self._json(200, W.decide(sys.modules[__name__], k, card_id, "通过", str(body.get("意见") or "").strip()))
             return
         if action == "reject":
             k = self._require(roles=[ROLE_ADMIN, ROLE_APPROVER])
             if not k:
                 return
-            self._json(200, reject_card(k, card_id, str(body.get("意见") or "").strip()))
+            self._json(200, W.decide(sys.modules[__name__], k, card_id, "退回", str(body.get("意见") or "").strip()))
+            return
+        if action == "withdraw":
+            k = self._require()
+            if not k:
+                return
+            self._json(200, W.withdraw(sys.modules[__name__], k, card_id, str(body.get("意见") or "提交人撤回").strip()))
             return
         if action == "delete":
             k = self._require(roles=[ROLE_ADMIN, ROLE_KEEPER])
@@ -2848,8 +3037,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._json(400, {"ok": False, "error": "文件内容不是合法 base64"})
             return
-        if len(raw) > 5 * 1024 * 1024:
-            self._json(400, {"ok": False, "error": "文件超过 5MB"})
+        max_mb = int(os.environ.get('ZL_UPLOAD_MAX_MB', '50'))
+        if len(raw) > max_mb * 1024 * 1024:
+            self._json(400, {"ok": False, "error": f"文件超过 {max_mb}MB"})
             return
         ext = os.path.splitext(fname)[1].lower() or ".png"
         if ext not in (".png", ".jpg", ".jpeg", ".pdf", ".docx", ".xlsx", ".csv", ".txt"):
@@ -2923,7 +3113,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     tok = os.environ.get("ZL_TOKEN") or os.environ.get("RENTALS_LIBRARY_TOKEN") or ""
-    if lc.is_sandbox():
+    if os.environ.get('ZL_STORAGE') == 'local':
+        if not os.environ.get('ZL_DATA_DIR') or not os.environ.get('ZL_SESSION_KEY'):
+            raise RuntimeError('Local mode requires ZL_DATA_DIR and ZL_SESSION_KEY')
+    elif lc.is_sandbox():
         if tok:
             lc.set_token(tok)
         print("沙箱模式：走 auth-proxy 访问资料库", file=sys.stderr)
