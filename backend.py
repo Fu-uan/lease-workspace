@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import urllib.request
 import urllib.error
+import socket
 
 import library_client as lc
 import workflow as W
@@ -3069,6 +3070,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {'ok': True, 'model': model, 'result': parsed, 'raw': msg[:120000]})
         except urllib.error.HTTPError as e:
             return self._json(502, {'ok': False, 'error': f'模型接口返回 HTTP {e.code}'})
+        except socket.gaierror:
+            return self._json(502, {'ok': False, 'error': '模型接口域名无法解析。请确认 WorkBuddy 运行环境已接入公司内网 DNS，或改用可从该环境访问的网关地址'})
         except Exception as e:
             return self._json(502, {'ok': False, 'error': '模型接口调用失败：' + str(e)[:180]})
 
