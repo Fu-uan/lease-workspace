@@ -51,7 +51,7 @@
     if(help)help.textContent='上传完整合同即可。当前 Demo 支持单文件不超过50MB、PDF最多50页；识别后仍需人工核对。正式版边界由服务器配置。';
     const sourceRow=document.getElementById('ocrFile').parentElement;
     sourceRow.className='intake-source-grid';
-    sourceRow.innerHTML='<div class="intake-source-card ocr"><h4>方案一：本地 OCR 识别</h4><p>上传完整合同后，由系统 OCR 提取文字和候选字段。识别结果需要人工核对。</p><div class="source-actions"><input type="file" id="ocrFile" accept=".png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt" style="font-size:13px"><button class="btn btn-primary btn-sm" data-action="ocr-run">上传并进行 OCR 识别</button><button class="btn btn-ghost btn-sm" data-action="ocr-text">查看 OCR 原文</button></div></div>'+
+    sourceRow.innerHTML='<div class="intake-source-card ocr"><h4>方案一：合同 OCR 识别</h4><p>上传完整合同后，由应用服务器 OCR 提取文字和候选字段。识别结果需要人工核对。</p><div class="source-actions"><input type="file" id="ocrFile" accept=".png,.jpg,.jpeg,.pdf,.docx,.xlsx,.csv,.txt" style="font-size:13px"><button class="btn btn-primary btn-sm" data-action="ocr-run">上传并进行 OCR 识别</button><button class="btn btn-ghost btn-sm" data-action="ocr-text">查看 OCR 原文</button></div></div>'+
       '<div class="intake-source-card ai"><h4>方案二：AI 辅助识别</h4><p>调用公司内网多模态模型识别合同。首次使用先配置接口和 API Key，结果仍需人工核对。</p><div class="source-actions"><button class="btn btn-secondary btn-sm" data-action="ai-config">配置 AI 接口</button><button class="btn btn-primary btn-sm" data-action="ai-scan">AI 识别合同</button></div></div><span id="ocrStatus" class="hint"></span>';
     const oldAiBox=document.getElementById('ocrAiBox');if(oldAiBox)oldAiBox.style.display='none';
     const fileBar=document.createElement('div');fileBar.className='contract-file-bar';

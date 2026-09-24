@@ -29,8 +29,6 @@ import base64
 import hashlib
 import hmac as _hmac
 import re
-import subprocess
-import tempfile
 import urllib.request
 import urllib.error
 import socket
@@ -1858,12 +1856,8 @@ def export_csv(kind):
 
 
 # ---- OCR / 文件上传 -----------------------------------------------------
-OCR_VENV_PY = os.environ.get("ZL_OCR_PY", "C:/Users/13777/.workbuddy/binaries/python/envs/default/Scripts/python.exe")
-OCR_SCRIPT = os.environ.get("ZL_OCR_SCRIPT", r"D:/workbuddy/财务租赁/local_ocr.py")
-
-
 def ocr_extract(files: list) -> dict:
-    """优先走 importer.py 内嵌 OCR（rapidocr ONNX，云端 pip 安装后可用）；本地 venv 作 fallback。
+    """使用项目内 importer.py；依赖必须安装在实际运行服务器。
 
     返回 {"fields":{...}, "segments":[...], "text":...}
     """
@@ -1886,56 +1880,12 @@ def ocr_extract(files: list) -> dict:
                 "monthly_amount": "月租金", "tax_rate": "税率", "department": "提单部门", "applicant": "申请人",
             }
             cn_fields = {fmap.get(k, k): v for k, v in fields.items()}
-            # 金额段：importer 不产出付款段，用 local_ocr 的规则粗提取（无则空）
+            # 金额段由项目内规则提取（无则空）
             segs = _extract_segments(result.get("text", ""))
             return {"fields": cn_fields, "segments": segs, "text": result.get("text", "")}
-    except Exception:
-        # importer 缺失或 OCR 引擎未装，回退到本地 venv local_ocr.py
-        pass
-
-    # 路径2：本地 venv local_ocr.py（仅本机开发用）
-    cmd = [OCR_VENV_PY, OCR_SCRIPT] + files
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
-    except FileNotFoundError:
-        return {"fields": {}, "segments": [], "text": "", "error": "OCR 引擎未安装"}
-    except subprocess.TimeoutExpired:
-        return {"fields": {}, "segments": [], "text": "", "error": "OCR 超时"}
-    out = p.stdout or ""
-    if "缺少本地 OCR 引擎" in p.stderr or "缺少本地 OCR 引擎" in out:
-        return {"fields": {}, "segments": [], "text": "", "error": "OCR 引擎未安装"}
-    if p.returncode != 0 and not out.strip():
-        return {"fields": {}, "segments": [], "text": "", "error": (p.stderr or "OCR 失败").strip()[:200]}
-
-    fields = {}
-    text_lines = []
-    in_text = False
-    for line in out.splitlines():
-        if "识别全文" in line:
-            in_text = True
-            continue
-        if "抽出的字段" in line:
-            in_text = False
-            continue
-        if in_text:
-            text_lines.append(line)
-        m = line.strip().split(None, 1)
-        if len(m) == 2 and m[0] in ("合同编号", "出租方", "承租方", "租赁地址", "租赁起始日", "租赁终止日", "月租金", "计租面积"):
-            if not in_text:
-                fields[m[0]] = m[1].strip()
-    text = "\n".join(text_lines)
-    # 兜底路径也走 importer.extract，保证付款计划表/分摊比例等结构化结果一致
-    try:
-        import importer as _imp
-        enriched = _imp.extract(text)
-        return {"fields": enriched.get("fields", {}),
-                "segments": enriched.get("segments", []),
-                "payment_table": enriched.get("payment_table", []),
-                "sharing": enriched.get("sharing", []),
-                "oneoff_fees": enriched.get("oneoff_fees", []),
-                "text": text}
-    except Exception:
-        return {"fields": fields, "segments": _extract_segments(text), "text": text}
+    except Exception as e:
+        return {"fields": {}, "segments": [], "text": "",
+                "error": "合同解析失败：" + str(e)[:200]}
 
 
 def _extract_segments(text: str):
@@ -3100,19 +3050,10 @@ class Handler(BaseHTTPRequestHandler):
             import importer
             result = importer.parse({"filename": fname, "content": base64.b64encode(raw).decode()})
         except Exception as e:
-            # importer 不可用则落盘走 ocr_extract 本地 fallback
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fp:
-                fp.write(raw)
-                tmp = fp.name
-            try:
-                result = ocr_extract([tmp])
-            finally:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
+            self._json(400, {"ok": False, "error": "合同解析失败：" + str(e)[:200]})
+            return
         if isinstance(result, dict) and result.get("error"):
-            self._json(200, {"ok": True, "error": result["error"], "fields": {}, "segments": []})
+            self._json(400, {"ok": False, "error": result["error"]})
             return
         fields = result.get("fields", {}) if isinstance(result, dict) else {}
         text = result.get("text", "") if isinstance(result, dict) else ""
