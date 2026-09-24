@@ -22,7 +22,6 @@ test_review_flow.py
 test_s5.py
 test_s58.py
 test_upload.py
-library_client.py
 gen_contract.py
 backend_v1.bak
 tools_integrate_workflow.py

@@ -616,7 +616,7 @@ def ocr(data):
         import numpy as np
         from rapidocr_onnxruntime import RapidOCR
     except ImportError:
-        raise ValueError('扫描识别组件未安装，请让部署人员安装 requirements-import.txt；也可手动登记。')
+        raise ValueError('扫描识别组件未安装，请让部署人员安装 requirements.txt；也可手动登记。')
     with Image.open(io.BytesIO(data)) as im:
         if im.width * im.height > 24000000:
             raise ValueError('图片超过2400万像素，请压缩后重试')
@@ -647,7 +647,7 @@ def parse(data):
         try:
             import pymupdf
         except ImportError:
-            raise ValueError('PDF组件未安装，请让部署人员安装 requirements-import.txt')
+            raise ValueError('PDF组件未安装，请让部署人员安装 requirements.txt')
         with pymupdf.open(stream=raw, filetype='pdf') as doc:
             if doc.needs_pass or len(doc) > max_pages:
                 raise ValueError(f'请上传未加密、最多{max_pages}页的PDF；超过边界请联系管理员调整服务器配置')

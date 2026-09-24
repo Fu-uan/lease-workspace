@@ -1,0 +1,25 @@
+{
+  "salt": "REPLACE_WITH_DEPLOYMENT_SALT",
+  "session_ttl_hours": 8,
+  "tables": {
+    "md_suppliers": "REPLACE_WITH_TABLE_ID",
+    "md_depts": "REPLACE_WITH_TABLE_ID",
+    "md_account_rules": "REPLACE_WITH_TABLE_ID",
+    "md_contacts": "REPLACE_WITH_TABLE_ID",
+    "md_entities": "REPLACE_WITH_TABLE_ID",
+    "md_sites": "REPLACE_WITH_TABLE_ID",
+    "md_params": "REPLACE_WITH_TABLE_ID",
+    "cards": "REPLACE_WITH_TABLE_ID",
+    "amount_overview": "REPLACE_WITH_TABLE_ID",
+    "contract_ledger": "REPLACE_WITH_TABLE_ID",
+    "ifrs_detail": "REPLACE_WITH_TABLE_ID",
+    "oneoff_fees": "REPLACE_WITH_TABLE_ID",
+    "cost_share": "REPLACE_WITH_TABLE_ID",
+    "pay_plan": "REPLACE_WITH_TABLE_ID",
+    "vouchers": "REPLACE_WITH_TABLE_ID",
+    "approval_tickets": "REPLACE_WITH_TABLE_ID",
+    "version_snapshots": "REPLACE_WITH_TABLE_ID",
+    "task_pool": "REPLACE_WITH_TABLE_ID",
+    "users_roles": "REPLACE_WITH_TABLE_ID"
+  }
+}

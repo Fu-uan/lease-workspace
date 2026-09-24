@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """隔离单元测试（阶段4 门禁）：不访问真实团队空间，验证后端核心计算与状态机。"""
 import sys, os
-sys.path.insert(0, r"D:/workbuddy/财务租赁/租赁线上化LightApp")
 
 import unittest
 from decimal import Decimal
