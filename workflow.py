@@ -125,7 +125,20 @@ def submit(B, cur, card_id):
 
 def active_submit(B, card_id):
     entries = events(B, card_id, 'approval-v2')
-    return entries[-1] if entries and entries[-1].get('action') == '提交' else None
+    if entries and entries[-1].get('action') == '提交':
+        return entries[-1]
+    # 兼容早期版本创建的卡片：它们没有 approval-v2 快照，
+    # 但仍有正式 approval_tickets 待审工单。
+    ticket = B._find_ticket_active(card_id)
+    if ticket:
+        return {
+            'kind': 'approval-v2-legacy',
+            'action': '提交',
+            'ticket_id': ticket.get('record_id'),
+            'actor_name': B.val(ticket, '提交人', ''),
+            'time': B.val(ticket, '提交时间', ''),
+        }
+    return None
 
 
 def decide(B, cur, card_id, action, opinion):
@@ -133,7 +146,11 @@ def decide(B, cur, card_id, action, opinion):
         if cur.get('role') not in (B.ROLE_APPROVER, B.ROLE_ADMIN):
             return {'ok': False, 'error': '无审批权限'}
         sub = active_submit(B, card_id)
-        if not sub or sub['actor'] == cur.get('account'):
+        if not sub:
+            return {'ok': False, 'error': '缺少有效提交记录或不允许审批本人提交'}
+        submitter_account = sub.get('actor')
+        submitter_name = sub.get('actor_name')
+        if (submitter_account and submitter_account == cur.get('account')) or (submitter_name and submitter_name == cur.get('name')):
             return {'ok': False, 'error': '缺少有效提交记录或不允许审批本人提交'}
         if action == '退回' and not opinion.strip():
             return {'ok': False, 'error': '请填写退回原因'}

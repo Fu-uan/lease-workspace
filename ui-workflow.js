@@ -39,7 +39,7 @@
     });
   }
   openCard=function(){
-    baseOpen();draftId=crypto.randomUUID();savedCard='';fieldsSource={};restored=false;
+    baseOpen();draftId=(crypto.randomUUID?crypto.randomUUID():('draft-'+Date.now()+'-'+Math.random().toString(16).slice(2)));savedCard='';fieldsSource={};restored=false;
     const receiver=document.getElementById('card_receiver');
     receiver.parentElement.querySelector('label').textContent='实际收款方';
     receiver.parentElement.insertAdjacentHTML('beforebegin',fld('出租方（甲方）','card_lessor',''));
@@ -157,7 +157,7 @@
       }
       sessionStorage.removeItem(key());draftId='';closeDlg('dlgCard');
       await showDetail(ids[0]);if(ids.length>1)alert('已保存租金和管理费两张卡；请分别复核并提交。');
-    }catch(e){msg(e.message+'。草稿已保留，修正后再次点击保存可继续，不会重复建卡。');}
+    }catch(e){msg(e.message+'。草稿已保留，修正后再次点击保存可继续，不会重复建卡。');alert('保存草稿失败：'+e.message+'\n草稿已保留，请修正后重试。');}
     finally{busy=false;document.getElementById('dlgCardOk').disabled=false;}
   };
   renderDetail=async function(id){
